@@ -7,7 +7,7 @@ Neo Voxy is maintained by **JohnSnow**, continuing [NHblock714/voxy](https://git
 > [!IMPORTANT]
 > If problems occur after updating Neo Voxy, first delete the Neo Voxy configuration file and the Voxy cache in the affected world.
 >
-> **Building**: GitHub Actions build artifacts have been manually deleted. Fork this repository, run `manual-artifact` in your fork, and download the resulting artifacts; alternatively, follow the manual build instructions below.
+> **Building**: Pushing a `v*` tag builds all three editions and publishes them to a GitHub Release (three jars plus `SHA256SUMS.txt`). Run `manual-artifact` if you just need one-off build output; the manual build instructions below still apply.
 >
 > **Server data sharing**: Neo Voxy is compatible with [voxy-server-side](https://www.curseforge.com/minecraft/mc-mods/voxy-server-side-forge-neoforge), which can be installed on the server to share LOD data.
 >
@@ -72,6 +72,27 @@ Build all editions:
 ```
 
 The scripts prefer `JAVA_HOME_17`, `JAVA_HOME_21`, and `JAVA_HOME_25`. On Linux/macOS, use `scripts/build.sh` and `scripts/build-all.sh`. Final artifacts are copied to `dist/`.
+
+## Releasing
+
+Pushing a tag publishes a release. `.github/workflows/release.yml` builds all three editions and attaches them:
+
+```bash
+git tag v0.5.0-beta.2
+git push origin v0.5.0-beta.2
+```
+
+- All three editions must build; a failure skips the release instead of shipping a partial one.
+- Tags containing `beta` / `alpha` / `rc` are marked prerelease, everything else becomes Latest.
+- Re-running the same tag updates the existing release (assets overwritten, notes refreshed) instead of failing.
+- Manual run: Actions → `发布 Release` → Run workflow, optionally with a tag; an empty tag yields `v<UTC date>-<short sha>`.
+- Assets: three jars plus `SHA256SUMS.txt`; verify with `sha256sum -c SHA256SUMS.txt`.
+
+Version note: the release name comes from the tag while each jar's version comes from its own `gradle.properties` (root, `editions/forge-1.20.1-client`, `editions/neoforge-26.1.2-client`). Align `mod_version` with the tag before releasing.
+
+Publishing needs write access for `GITHUB_TOKEN`. The workflow declares `permissions: contents: write`; if that step returns 403, set Settings → Actions → General → Workflow permissions to Read and write permissions.
+
+`manual-artifact` stays as the build-only entry point: it uploads artifacts and never creates a release.
 
 ## License
 

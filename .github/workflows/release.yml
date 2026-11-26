@@ -1,0 +1,205 @@
+name: 发布 Release
+
+# 触发方式：
+#   1) 推 tag（v0.5.0 / v0.4.0-beta.2 ...）→ 构建三个版本并发布 Release
+#   2) Actions 页面手动运行，可自填 tag；留空则自动生成 v<UTC日期>-<短哈希>
+# 三个版本全部构建成功才会发布，避免发出残缺 Release。
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "发布标签，例如 v0.5.0-beta.2；留空自动生成"
+        required: false
+        default: ""
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.label }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - edition: neoforge-1.21.1
+            label: 1.21.1 NeoForge
+            java: "21"
+          - edition: client-1.20.1
+            label: 1.20.1 Forge client
+            java: "17"
+          - edition: client-26.1.2
+            label: 26.1.2 NeoForge client
+            java: "25"
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v7
+
+      - name: Setup Java ${{ matrix.java }}
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
+          cache-read-only: false
+
+      - name: Keep compiler errors visible
+        if: matrix.edition == 'client-26.1.2'
+        shell: bash
+        run: |
+          echo "::remove-matcher owner=javac::"
+          echo "::add-matcher::${GITHUB_WORKSPACE}/.github/javac-errors.json"
+
+      - name: Build ${{ matrix.edition }}
+        env:
+          EDITION: ${{ matrix.edition }}
+        shell: bash
+        run: bash scripts/build.sh "$EDITION"
+
+      # archive: false 时 upload-artifact 只收单文件，artifact 名直接用 jar 文件名；
+      # 三个版本的 jar 文件名互不相同，不会撞名。
+      - name: Upload jar
+        uses: actions/upload-artifact@v7
+        with:
+          path: dist/*.jar
+          if-no-files-found: error
+          archive: false
+          retention-days: 7
+
+  release:
+    name: 发布 GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download jars
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: 校验产物
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t jars < <(find dist -maxdepth 2 -type f -name "*.jar" | sort)
+          printf "%s\n" "${jars[@]}"
+          if [ "${#jars[@]}" -ne 3 ]; then
+            echo "::error::期望 3 个 jar，实际 ${#jars[@]} 个"
+            exit 1
+          fi
+
+      - name: 生成校验和
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum ./*.jar | sed "s|\\./||" | sort -k2 > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: 生成发布说明
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag }}"
+          if [ -z "$tag" ] && [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            tag="$GITHUB_REF_NAME"
+          fi
+          auto_tag=""
+          if [ -z "$tag" ]; then
+            tag="v$(date -u +%Y%m%d-%H%M)-$(printf %s "$GITHUB_SHA" | cut -c1-7)"
+            auto_tag="1"
+          fi
+          if ! printf %s "$tag" | grep -Eq "^[A-Za-z0-9._+-]+$"; then
+            echo "::error::tag 含非法字符：$tag"
+            exit 1
+          fi
+          echo "RELEASE_TAG=$tag" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG_AUTO=${auto_tag}" >> "$GITHUB_ENV"
+
+          # 表格逐行写文件：命令替换会吃掉行尾换行，不能攒变量
+          : > table.md
+          for jar in dist/*.jar; do
+            name=$(basename "$jar")
+            mc=$(printf %s "$name" | sed -n "s/.*-mc\([0-9.]*\)-.*/\1/p")
+            if printf %s "$name" | grep -q neoforge; then loader=NeoForge; else loader=Forge; fi
+            size=$(du -h "$jar" | cut -f1)
+            printf "| %s | MC %s · %s | %s |\n" "$name" "$mc" "$loader" "$size" >> table.md
+          done
+
+          {
+            echo "## Neo Voxy ${tag}"
+            echo
+            echo "构建提交：${GITHUB_SHA}　·　运行记录：${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo
+            echo "| 文件 | 目标版本 | 大小 |"
+            echo "|---|---|---|"
+            cat table.md
+            echo
+            echo "### 安装要求"
+            echo
+            echo "| 版本 | 渲染前置 | Java |"
+            echo "|---|---|---|"
+            echo "| MC 1.21.1 · NeoForge | Sodium 0.8.x / Iris 1.8.12+ | 21 |"
+            echo "| MC 1.20.1 · Forge | Embeddium 0.3.31+（必装）/ Oculus 1.8.0+（可选） | 17 |"
+            echo "| MC 26.1.2 · NeoForge | Sodium 0.9.2 / Iris 1.11.4+ | 25 |"
+            echo
+            echo "Mod ID 为 voxy，仅客户端安装；1.21.1 版服务端可选装 voxy-server-side 共享 LOD 数据。"
+            echo
+            echo "更新 Neo Voxy 后若出现异常，先删除 Neo Voxy 配置文件和对应存档中的 Voxy 缓存。"
+            echo
+            echo "SHA-256 见附件 SHA256SUMS.txt。"
+          } > RELEASE_NOTES.md
+          cat RELEASE_NOTES.md
+
+      - name: 发布
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="$RELEASE_TAG"
+          flags=()
+          if [ "${RELEASE_TAG_AUTO:-}" = "1" ]; then
+            # 自动生成的 tag 不是正式版本号，永远不抢 Latest
+            flags+=("--prerelease")
+          else
+            case "$tag" in
+              *beta*|*alpha*|*rc*) flags+=("--prerelease") ;;
+              *) flags+=("--latest") ;;
+            esac
+          fi
+          if gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/*.jar dist/SHA256SUMS.txt -R "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$tag" -R "$GITHUB_REPOSITORY" --notes-file RELEASE_NOTES.md "${flags[@]}"
+            echo "已更新既有 Release：$tag"
+          else
+            gh release create "$tag" dist/*.jar dist/SHA256SUMS.txt \
+              -R "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "Neo Voxy $tag" \
+              --notes-file RELEASE_NOTES.md \
+              "${flags[@]}"
+          fi
+          url="$(gh release view "$tag" -R "$GITHUB_REPOSITORY" --json url --jq .url)"
+          echo "Release：$url"
+          {
+            echo "## Release $tag"
+            echo
+            cat RELEASE_NOTES.md
+            echo
+            echo "发布地址：$url"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -7,7 +7,7 @@ Neo Voxy 由 **JohnSnow** 维护，基于 [NHblock714/voxy](https://github.com/N
 > [!IMPORTANT]
 > 更新 Neo Voxy 后若出现异常，请先删除 Neo Voxy 配置文件和对应存档中的 Voxy 缓存。
 >
-> **构建**：GitHub Actions 构建产物已被人为删除。请 Fork 本仓库，并在自己的仓库中运行 `manual-artifact` 后下载产物；也可按照下方教程手动构建。
+> **构建**：推送 `v*` tag 会自动构建三个版本并发布 Release，附件为三个 jar 与 `SHA256SUMS.txt`；只想要一次临时产物可在 Actions 里手动运行 `manual-artifact`。也可按下方教程本地构建。
 >
 > **服务器数据共享**：Neo Voxy 兼容 [voxy-server-side](https://www.curseforge.com/minecraft/mc-mods/voxy-server-side-forge-neoforge)，可在服务器端安装以共享 LOD 数据。
 >
@@ -74,6 +74,27 @@ Windows 单独构建：
 ```
 
 脚本优先读取 `JAVA_HOME_17`、`JAVA_HOME_21` 和 `JAVA_HOME_25`。Linux/macOS 可使用 `scripts/build.sh` 和 `scripts/build-all.sh`。最终产物复制到 `dist/`。
+
+## 发布
+
+推 tag 即发布，由 `.github/workflows/release.yml` 构建三个版本并上传到 Release：
+
+```bash
+git tag v0.5.0-beta.2
+git push origin v0.5.0-beta.2
+```
+
+- 三个版本**全部构建成功**才发布，任一失败不出 Release，避免发出残缺版本。
+- tag 含 `beta` / `alpha` / `rc` 自动标为预发布，否则标记为该版本 Latest。
+- 同一 tag 重跑不会重复创建：已存在的 Release 会覆盖附件并更新说明。
+- 手动发布：Actions → `发布 Release` → Run workflow，可自填 tag；留空自动生成 `v<UTC日期>-<短哈希>`。
+- 附件：三个 jar + `SHA256SUMS.txt`，`sha256sum -c SHA256SUMS.txt` 可直接校验。
+
+版本号提醒：Release 名取自 tag，jar 内版本取自各专目的 `gradle.properties`（根目录 / `editions/forge-1.20.1-client` / `editions/neoforge-26.1.2-client`）。发版前把 `mod_version` 与 tag 对齐，否则会出现 tag 是 `v0.5.0` 而 jar 内仍是 `0.4.0-beta.1` 的情况。
+
+发布步骤需要 `GITHUB_TOKEN` 的写权限：工作流已显式声明 `permissions: contents: write`；若该步骤返回 403，到 Settings → Actions → General → Workflow permissions 改为 Read and write permissions。
+
+`manual-artifact` 保留为手动构建入口，只上传 artifact 不发 Release。
 
 ## 许可证
 
